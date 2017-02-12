@@ -11,13 +11,29 @@ module Twitter
         @tcp_socket_class = options.fetch(:tcp_socket_class) { TCPSocket }
         @ssl_socket_class = options.fetch(:ssl_socket_class) { OpenSSL::SSL::SSLSocket }
         @using_ssl        = options.fetch(:using_ssl)        { false }
+        @select_timeout   = options.fetch(:select_timeout)  { 90 }
       end
 
       def stream(request, response)
         client = connect(request)
         request.stream(client)
-        while body = client.readpartial(1024) # rubocop:disable AssignmentInCondition
-          response << body
+
+        loop do
+          begin
+            body = client.read_nonblock(1024) # rubocop:disable AssignmentInCondition
+            response << body
+          rescue IO::WaitReadable
+            puts "[#{DateTime.now.to_s}] rescuing IO::WaitReadable and performing IO.select"
+
+            #Wait 90 secs per twitter documentation on stalls
+            readables, _, _ = IO.select([client], [], [], @select_timeout)
+            if readables.nil?
+              client.close
+              raise Twitter::Error::ServerError.new('Streaming timeout')
+            else
+              retry
+            end
+          end
         end
       end
 
